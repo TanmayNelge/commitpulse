@@ -2,7 +2,7 @@
 
 import type { ContributionCalendar, ContributionDay } from '@/types';
 import { calculateStreak, aggregateCalendars } from '@/lib/calculate';
-import { TTLCache } from '@/lib/cache';
+import { DistributedCache } from '@/lib/cache';
 import { LANGUAGE_COLORS } from '@/lib/svg/languageColors';
 import { CONTRIBUTION_MILESTONES, STREAK_MILESTONES } from './svg/constants';
 
@@ -152,9 +152,9 @@ type FetchOptions = {
 
 export const GITHUB_CACHE_TTL_MS = 5 * 60 * 1000;
 
-const contributionsCache = new TTLCache<ContributionCalendar>(1000);
-const profileCache = new TTLCache<GitHubUserProfile>(1000);
-const reposCache = new TTLCache<GitHubRepo[]>(500);
+const contributionsCache = new DistributedCache<ContributionCalendar>(1000);
+const profileCache = new DistributedCache<GitHubUserProfile>(1000);
+const reposCache = new DistributedCache<GitHubRepo[]>(500);
 
 interface GitHubUserProfile {
   login: string;
@@ -218,7 +218,7 @@ export async function fetchGitHubContributions(
 ): Promise<ContributionCalendar> {
   const key = cacheKey('contributions', username, options.from?.substring(0, 4));
   if (!options.bypassCache) {
-    const cached = contributionsCache.get(key);
+    const cached = await contributionsCache.get(key);
     if (cached) return cached;
   }
 
@@ -294,7 +294,7 @@ export async function fetchGitHubContributions(
     });
   });
 
-  if (!options.bypassCache) contributionsCache.set(key, calendar, GITHUB_CACHE_TTL_MS);
+  if (!options.bypassCache) await contributionsCache.set(key, calendar, GITHUB_CACHE_TTL_MS);
 
   return calendar;
 }
@@ -306,7 +306,7 @@ export async function fetchUserProfile(
   const key = cacheKey('profile', username);
   const encodedUsername = encodeURIComponent(username);
   if (!options.bypassCache) {
-    const cached = profileCache.get(key);
+    const cached = await profileCache.get(key);
     if (cached) return cached;
   }
 
@@ -323,7 +323,7 @@ export async function fetchUserProfile(
   }
 
   const profile = (await res.json()) as GitHubUserProfile;
-  if (!options.bypassCache) profileCache.set(key, profile, GITHUB_CACHE_TTL_MS);
+  if (!options.bypassCache) await profileCache.set(key, profile, GITHUB_CACHE_TTL_MS);
   return profile;
 }
 
@@ -334,7 +334,7 @@ export async function fetchUserRepos(
   const key = cacheKey('repos', username);
   const encodedUsername = encodeURIComponent(username);
   if (!options.bypassCache) {
-    const cached = reposCache.get(key);
+    const cached = await reposCache.get(key);
     if (cached) return cached;
   }
 
@@ -389,7 +389,7 @@ export async function fetchUserRepos(
     }
   }
 
-  if (!options.bypassCache) reposCache.set(key, allRepos, GITHUB_CACHE_TTL_MS);
+  if (!options.bypassCache) await reposCache.set(key, allRepos, GITHUB_CACHE_TTL_MS);
   return allRepos;
 }
 
