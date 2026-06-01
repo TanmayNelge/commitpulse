@@ -764,11 +764,39 @@ export async function fetchOrgMembers(orgName: string): Promise<string[]> {
 
   return allMembers;
 }
+export type OrgDashboardData = {
+  profile: ReturnType<typeof buildProfileData> & {
+    bio: string;
+    location: string;
+    isPro: boolean;
+    stats: {
+      repositories: number;
+      followers: number;
+      following: number;
+      stars: number;
+    };
+  };
+  stats: {
+    currentStreak: number;
+    peakStreak: number;
+    totalContributions: number;
+  };
+  calendar: ContributionCalendar;
+  /**
+   * Indicates if the dashboard aggregation was aborted early due to serverless timeouts
+   * or per-member fetch failures. If true, the caller should gracefully handle that
+   * some organization members are missing from the aggregate calendar.
+   */
+  isPartial: boolean;
+};
 
 /**
  * Generates an aggregated Organization Mega-Dashboard.
  */
-export async function getOrgDashboardData(orgName: string, options: FetchOptions = {}) {
+export async function getOrgDashboardData(
+  orgName: string,
+  options: FetchOptions = {}
+): Promise<OrgDashboardData> {
   const [profileData, reposData, membersOrError] = await Promise.all([
     fetchUserProfile(orgName, options),
     fetchUserRepos(orgName, options),
@@ -781,17 +809,30 @@ export async function getOrgDashboardData(orgName: string, options: FetchOptions
 
   const members = membersOrError;
 
-  // Limit active members to first 60 to protect shared token rate limit
-  const activeMembers = members.slice(0, 60);
+  // Limit active members to first 30 to protect shared token rate limit and improve response times
+  const activeMembers = members.slice(0, 30);
 
-  // Fetch calendars for all members concurrently with capped concurrency to avoid 429s/timeouts
-  const calendars = (
-    await runCappedConcurrency(activeMembers, 5, (member) =>
-      fetchGitHubContributions(member, options)
-        .then((data) => data.calendar)
-        .catch(() => null)
-    )
-  ).filter((c: ContributionCalendar | null) => c !== null) as ContributionCalendar[];
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
+
+  const fetchOptions = { ...options, signal: controller.signal };
+
+  let calendars: ContributionCalendar[] = [];
+  try {
+    // Fetch calendars for all members concurrently with capped concurrency to avoid 429s/timeouts
+    calendars = (
+      await runCappedConcurrency(activeMembers, 5, (member) => {
+        if (controller.signal.aborted) return Promise.resolve(null);
+        return fetchGitHubContributions(member, fetchOptions)
+          .then((data) => data.calendar)
+          .catch(() => null);
+      })
+    ).filter((c: ContributionCalendar | null) => c !== null) as ContributionCalendar[];
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const isPartial = calendars.length < activeMembers.length;
 
   // Create the Mega-City
   const aggregatedCalendar = aggregateCalendars(calendars);
@@ -819,6 +860,7 @@ export async function getOrgDashboardData(orgName: string, options: FetchOptions
       totalContributions: streakStats.totalContributions,
     },
     calendar: aggregatedCalendar,
+    isPartial,
   };
 }
 export function generateAchievements(
